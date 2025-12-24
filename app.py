@@ -1,11 +1,7 @@
 # app.py
 """
-Literature Search String Builder & Metadata Downloader
+Literature Search String Builder & Individual Database Downloader
 Databases: PubMed, PMC, Europe PMC
-Features:
-- Build Boolean search strings
-- Fetch search results metadata
-- Download results as CSV including search string
 """
 
 import streamlit as st
@@ -15,13 +11,13 @@ import pandas as pd
 import time
 
 # ---------------- CONFIG ---------------- #
-NCBI_API_KEY = "45d0c3dde0e0e9ebe70c39c60474a129ac09"
-MAX_RESULTS = 500000  # Max results per database
+NCBI_API_KEY = "YOUR_NCBI_API_KEY"
+MAX_RESULTS = 50  # Max results per database
 
 # ---------------- PAGE CONFIG ---------------- #
-st.set_page_config(page_title="Literature Search Builder & Downloader", page_icon="📚", layout="wide")
-st.title("📚 Literature Search String Builder & Metadata Downloader")
-st.caption("Build search strings, fetch PubMed / PMC / Europe PMC results, and download CSV with metadata.")
+st.set_page_config(page_title="Literature Search Builder", page_icon="📚", layout="wide")
+st.title("📚 Literature Search Builder & Individual Database Downloader")
+st.caption("Build search strings, open in browser, and download search results individually")
 
 # ---------------- INPUT SECTION ---------------- #
 with st.sidebar:
@@ -63,7 +59,6 @@ block3_pubmed = build_or_block(term3, "", "Title/Abstract")
 not_pubmed = build_not_block(exclude_terms, "Publication Type")
 pubmed_query = combine_blocks(block1_pubmed, block2_pubmed, block3_pubmed) + not_pubmed
 
-# Europe PMC (field tags optional)
 block1_epmc = build_or_block(term1, synonyms1)
 block2_epmc = build_or_block(term2, synonyms2)
 block3_epmc = build_or_block(term3, "")
@@ -75,7 +70,7 @@ pubmed_url = f"https://pubmed.ncbi.nlm.nih.gov/?term={urllib.parse.quote(pubmed_
 pmc_url = f"https://www.ncbi.nlm.nih.gov/pmc/?term={urllib.parse.quote(pubmed_query)}"
 europe_pmc_url = f"https://europepmc.org/search?query={urllib.parse.quote(epmc_query)}"
 
-# ---------------- FETCH RESULTS ---------------- #
+# ---------------- FETCH FUNCTIONS ---------------- #
 def fetch_pubmed_results(query: str, max_results: int = 50, api_key: str = None):
     ids = []
     retstart = 0
@@ -133,23 +128,21 @@ col1.markdown(f"🔬 [PubMed]({pubmed_url})", unsafe_allow_html=True)
 col2.markdown(f"📄 [PMC]({pmc_url})", unsafe_allow_html=True)
 col3.markdown(f"🌍 [Europe PMC]({europe_pmc_url})", unsafe_allow_html=True)
 
-# ---------------- FETCH & DOWNLOAD ---------------- #
-if st.button("Fetch & Download Metadata"):
-    st.info("Fetching results...")
+# ---------------- FETCH & DOWNLOAD INDIVIDUAL ---------------- #
+st.subheader("📥 Fetch & Download Individual Database Results")
+
+if st.button("Fetch PubMed Metadata"):
     pubmed_ids = fetch_pubmed_results(pubmed_query, MAX_RESULTS, NCBI_API_KEY)
     st.success(f"Fetched {len(pubmed_ids)} PubMed IDs")
-    
+    df_pubmed = pd.DataFrame({"PubMed_ID": pubmed_ids, "Search_String": pubmed_query})
+    st.download_button("⬇️ Download PubMed CSV", df_pubmed.to_csv(index=False).encode('utf-8'), "pubmed_results.csv", "text/csv")
+
+if st.button("Fetch Europe PMC Metadata"):
     epmc_results = fetch_europe_pmc_results(epmc_query, MAX_RESULTS)
     st.success(f"Fetched {len(epmc_results)} Europe PMC results")
-    
-    # Prepare CSV
-    df_pubmed = pd.DataFrame({"PubMed_ID": pubmed_ids, "Search_String": pubmed_query})
     df_epmc = pd.DataFrame(epmc_results)
     df_epmc["Search_String"] = epmc_query
-    
-    with pd.ExcelWriter("search_results.xlsx") as writer:
-        df_pubmed.to_excel(writer, sheet_name="PubMed", index=False)
-        df_epmc.to_excel(writer, sheet_name="Europe_PMC", index=False)
-    
-    with open("search_results.xlsx", "rb") as f:
-        st.download_button("⬇️ Download Search Results (Excel)", f, "search_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("⬇️ Download Europe PMC CSV", df_epmc.to_csv(index=False).encode('utf-8'), "europe_pmc_results.csv", "text/csv")
+
+# PMC direct search (browser only, no API fetch included)
+st.info("PMC metadata API fetch is limited, use direct search link for full PMC results")

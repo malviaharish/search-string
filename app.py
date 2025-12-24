@@ -10,7 +10,7 @@ import time
 import pandas as pd
 
 # ---------------- CONFIG ---------------- #
-NCBI_API_KEY = "YOUR_VALID_NCBI_API_KEY"
+NCBI_API_KEY = "45d0c3dde0e0e9ebe70c39c60474a129ac09"
 MAX_PMC_RESULTS = 50  # Maximum PMC results to fetch per query
 
 # ---------------- PAGE CONFIG ---------------- #

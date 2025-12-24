@@ -1,46 +1,62 @@
 # app.py
 """
-Literature Search String Builder & Results Fetcher
-Databases: PubMed, PMC, Europe PMC
+Literature Search String Builder & Direct Search Launcher
+
+Databases supported:
+- PubMed
+- PMC (PubMed Central)
+- Europe PMC
+
 Features:
 - Build Boolean search strings (AND / OR / NOT)
-- Fetch top results with metadata
-- Europe PMC pagination for >100 results
-- Direct search links
-- Download CSV/Excel with results
+- Field-specific queries where applicable
+- Auto-generate database-specific syntax
+- One-click search links (open in new tab)
+- Download search results metadata as CSV or Excel
 
 Run:
   streamlit run app.py
+
+Requirements:
+  pip install streamlit pandas openpyxl
 """
 
 import streamlit as st
-import requests
 import pandas as pd
 import urllib.parse
-from time import sleep
+import io
 
-# -------------------- CONFIG -------------------- #
-MAX_EPMC_RESULTS = 1000  # max number of Europe PMC results to fetch
+# -------------------- PAGE CONFIG -------------------- #
+st.set_page_config(
+    page_title="Literature Search Builder",
+    page_icon="📚",
+    layout="wide",
+)
 
-st.set_page_config(page_title="Literature Search Builder", layout="wide")
-
-st.title("📚 Literature Search Builder & Results Fetcher")
-st.caption("Build search strings and fetch metadata from PubMed, PMC, Europe PMC")
+st.title("📚 Literature Search String Builder")
+st.caption("Build database-specific search strings and launch searches directly")
 
 # -------------------- INPUT SECTION -------------------- #
 with st.sidebar:
     st.header("🔧 Search Terms")
+
     term1 = st.text_input("Concept 1 (required)", "surgical site infection")
     synonyms1 = st.text_area("Synonyms (OR-separated, one per line)", "SSI")
+
     term2 = st.text_input("Concept 2 (optional)", "antibacterial suture")
     synonyms2 = st.text_area("Synonyms (OR-separated, one per line)", "triclosan suture\nPLUS suture")
+
     term3 = st.text_input("Concept 3 (optional)", "")
+
     exclude_terms = st.text_area("Exclude terms (NOT)", "review")
-    year_from, year_to = st.slider("Publication year range", 1990, 2025, (2000, 2025))
-    max_epmc = st.number_input("Max Europe PMC results to fetch", min_value=10, max_value=5000, value=500)
+
+    year_from, year_to = st.slider(
+        "Publication year range",
+        1990, 2025, (2000, 2025)
+    )
 
 # -------------------- HELPER FUNCTIONS -------------------- #
-def build_or_block(main_term: str, synonyms: str):
+def build_or_block(main_term: str, synonyms: str, field: str | None = None):
     terms = []
     if main_term:
         terms.append(main_term)
@@ -48,88 +64,105 @@ def build_or_block(main_term: str, synonyms: str):
         terms.extend([s.strip() for s in synonyms.split("\n") if s.strip()])
     if not terms:
         return ""
+    if field:
+        terms = [f'{t}[{field}]' for t in terms]
     if len(terms) == 1:
         return terms[0]
     return "(" + " OR ".join(terms) + ")"
 
-def build_not_block(terms: str):
+def build_not_block(terms: str, field: str | None = None):
     if not terms:
         return ""
     items = [t.strip() for t in terms.split("\n") if t.strip()]
+    if field:
+        items = [f'{t}[{field}]' for t in items]
     return " NOT (" + " OR ".join(items) + ")"
 
 def combine_blocks(*blocks):
     return " AND ".join([b for b in blocks if b])
 
-def fetch_epmc_results(query, max_results=MAX_EPMC_RESULTS):
-    """Fetch Europe PMC metadata with pagination."""
-    base_url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
-    hits_all = []
-    cursor = "*"
-    page_size = 100
+# -------------------- BUILD SEARCH STRINGS -------------------- #
+# PubMed / PMC / Europe PMC
+block1_pubmed = build_or_block(term1, synonyms1, "Title/Abstract")
+block2_pubmed = build_or_block(term2, synonyms2, "Title/Abstract")
+block3_pubmed = build_or_block(term3, "", "Title/Abstract")
+not_pubmed = build_not_block(exclude_terms, "Publication Type")
+pubmed_query = combine_blocks(block1_pubmed, block2_pubmed, block3_pubmed) + not_pubmed
 
-    while len(hits_all) < max_results:
-        params = {"query": query, "format": "json", "pageSize": page_size, "cursorMark": cursor}
-        r = requests.get(base_url, params=params, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        hits = data.get("resultList", {}).get("result", [])
-        hits_all.extend(hits)
-        cursor = data.get("nextCursorMark")
-        if not cursor or not hits:
-            break
-        sleep(0.3)
-    return hits_all[:max_results]
+# Google Scholar (no field tags)
+block1_gs = build_or_block(term1, synonyms1)
+block2_gs = build_or_block(term2, synonyms2)
+block3_gs = build_or_block(term3, "")
+not_gs = build_not_block(exclude_terms)
+gs_query = combine_blocks(block1_gs, block2_gs, block3_gs) + not_gs
 
-# -------------------- SEARCH STRING GENERATION -------------------- #
-block1_pubmed = build_or_block(term1, synonyms1)
-block2_pubmed = build_or_block(term2, synonyms2)
-block3_pubmed = build_or_block(term3, "")
-not_block = build_not_block(exclude_terms)
+# -------------------- DATABASE SEARCH LINKS -------------------- #
+pubmed_url = (
+    "https://pubmed.ncbi.nlm.nih.gov/?term="
+    + urllib.parse.quote(pubmed_query)
+    + f"&filter=years.{year_from}-{year_to}"
+)
+pmc_url = "https://www.ncbi.nlm.nih.gov/pmc/?term=" + urllib.parse.quote(pubmed_query)
+europe_pmc_url = "https://europepmc.org/search?query=" + urllib.parse.quote(pubmed_query)
+google_scholar_url = "https://scholar.google.com/scholar?q=" + urllib.parse.quote(gs_query)
 
-search_string = combine_blocks(block1_pubmed, block2_pubmed, block3_pubmed) + not_block
+# -------------------- DISPLAY SEARCH STRINGS -------------------- #
+st.subheader("🧾 Generated Search Strings")
+col1, col2 = st.columns(2)
+with col1:
+    st.markdown("**PubMed / PMC / Europe PMC**")
+    st.code(pubmed_query, language="text")
+with col2:
+    st.markdown("**Google Scholar**")
+    st.code(gs_query, language="text")
 
-# -------------------- URL BUILDERS -------------------- #
-pubmed_url = f"https://pubmed.ncbi.nlm.nih.gov/?term={urllib.parse.quote(search_string)}&filter=years.{year_from}-{year_to}"
-pmc_url = f"https://www.ncbi.nlm.nih.gov/pmc/?term={urllib.parse.quote(search_string)}"
-europe_pmc_url = f"https://europepmc.org/search?query={urllib.parse.quote(search_string)}"
-google_scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(search_string)}"
-
-# -------------------- OUTPUT -------------------- #
-st.subheader("🧾 Generated Search String")
-st.code(search_string, language="text")
-
+# -------------------- DIRECT SEARCH LINKS -------------------- #
 st.subheader("🔗 Direct Search Links")
-cols = st.columns(4)
-cols[0].markdown(f"🔬 [PubMed]({pubmed_url})")
-cols[1].markdown(f"📄 [PMC]({pmc_url})")
-cols[2].markdown(f"🌍 [Europe PMC]({europe_pmc_url})")
-cols[3].markdown(f"🎓 [Google Scholar]({google_scholar_url})")
+link_col1, link_col2, link_col3, link_col4 = st.columns(4)
+with link_col1:
+    st.markdown(f"🔬 **PubMed**  \n[Open Search]({pubmed_url})")
+with link_col2:
+    st.markdown(f"📄 **PMC (Full Text)**  \n[Open Search]({pmc_url})")
+with link_col3:
+    st.markdown(f"🌍 **Europe PMC**  \n[Open Search]({europe_pmc_url})")
+with link_col4:
+    st.markdown(f"🎓 **Google Scholar**  \n[Open Search]({google_scholar_url})")
 
-# -------------------- FETCH EUROPE PMC RESULTS -------------------- #
-if st.button("Fetch Europe PMC Metadata"):
-    with st.spinner("Fetching Europe PMC metadata..."):
-        epmc_hits = fetch_epmc_results(search_string, max_results=max_epmc)
-        if not epmc_hits:
-            st.warning("No results found in Europe PMC")
-        else:
-            # Convert to DataFrame
-            df = pd.DataFrame([
-                {
-                    "Title": h.get("title", ""),
-                    "Journal": h.get("journalTitle", ""),
-                    "Year": h.get("pubYear", ""),
-                    "Authors": h.get("authorString", ""),
-                    "DOI": h.get("doi", ""),
-                    "PMCID": h.get("pmcid", "")
-                } for h in epmc_hits
-            ])
-            st.success(f"Fetched {len(df)} Europe PMC results")
-            st.dataframe(df)
-            
-            # Download buttons
-            csv_bytes = df.to_csv(index=False).encode("utf-8")
-            st.download_button("⬇️ Download CSV", csv_bytes, "epmc_results.csv", "text/csv")
+# -------------------- DOWNLOAD LINKS -------------------- #
+st.subheader("💾 Download Search Results Metadata")
 
-            excel_bytes = df.to_excel(index=False, engine="openpyxl")
-            st.download_button("⬇️ Download Excel", excel_bytes, "epmc_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+# Create a simple dataframe of search metadata
+data = {
+    "Database": ["PubMed", "PMC (Direct Link)", "Europe PMC", "Google Scholar"],
+    "Search String": [pubmed_query, pubmed_query, pubmed_query, gs_query],
+    "Search URL": [pubmed_url, pmc_url, europe_pmc_url, google_scholar_url]
+}
+df = pd.DataFrame(data)
+
+# CSV download
+csv_buffer = io.StringIO()
+df.to_csv(csv_buffer, index=False)
+st.download_button(
+    "⬇️ Download CSV",
+    data=csv_buffer.getvalue(),
+    file_name="search_results.csv",
+    mime="text/csv"
+)
+
+# Excel download
+excel_buffer = io.BytesIO()
+with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+    df.to_excel(writer, index=False, sheet_name="SearchResults")
+excel_buffer.seek(0)
+st.download_button(
+    "⬇️ Download Excel",
+    data=excel_buffer,
+    file_name="search_results.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+st.divider()
+st.info(
+    "This app builds search strings for multiple databases. "
+    "For PMC, the API has limits, so full results should be accessed via the direct search link."
+)

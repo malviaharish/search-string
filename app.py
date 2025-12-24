@@ -1,26 +1,27 @@
 # app.py
 """
-Literature Search String Builder & Direct Search Launcher with PMC API
+Literature Search String Builder & Metadata Downloader
+Databases: PubMed, PMC, Europe PMC
+Features:
+- Build Boolean search strings
+- Fetch search results metadata
+- Download results as CSV including search string
 """
 
 import streamlit as st
 import urllib.parse
 import requests
-import time
 import pandas as pd
+import time
 
 # ---------------- CONFIG ---------------- #
 NCBI_API_KEY = "45d0c3dde0e0e9ebe70c39c60474a129ac09"
-MAX_PMC_RESULTS = 50  # Maximum PMC results to fetch per query
+MAX_RESULTS = 500000  # Max results per database
 
 # ---------------- PAGE CONFIG ---------------- #
-st.set_page_config(
-    page_title="Literature Search Builder",
-    page_icon="📚",
-    layout="wide",
-)
-st.title("📚 Literature Search String Builder")
-st.caption("Build database-specific search strings and launch searches directly")
+st.set_page_config(page_title="Literature Search Builder & Downloader", page_icon="📚", layout="wide")
+st.title("📚 Literature Search String Builder & Metadata Downloader")
+st.caption("Build search strings, fetch PubMed / PMC / Europe PMC results, and download CSV with metadata.")
 
 # ---------------- INPUT SECTION ---------------- #
 with st.sidebar:
@@ -31,9 +32,7 @@ with st.sidebar:
     synonyms2 = st.text_area("Synonyms (OR-separated, one per line)", "triclosan suture\nPLUS suture")
     term3 = st.text_input("Concept 3 (optional)", "")
     exclude_terms = st.text_area("Exclude terms (NOT)", "review")
-    year_from, year_to = st.slider(
-        "Publication year range", 1990, 2025, (2000, 2025)
-    )
+    year_from, year_to = st.slider("Publication year range", 1990, 2025, (2000, 2025))
 
 # ---------------- HELPER FUNCTIONS ---------------- #
 def build_or_block(main_term: str, synonyms: str, field: str | None = None):
@@ -64,28 +63,28 @@ block3_pubmed = build_or_block(term3, "", "Title/Abstract")
 not_pubmed = build_not_block(exclude_terms, "Publication Type")
 pubmed_query = combine_blocks(block1_pubmed, block2_pubmed, block3_pubmed) + not_pubmed
 
-block1_gs = build_or_block(term1, synonyms1)
-block2_gs = build_or_block(term2, synonyms2)
-block3_gs = build_or_block(term3, "")
-not_gs = build_not_block(exclude_terms)
-gs_query = combine_blocks(block1_gs, block2_gs, block3_gs) + not_gs
+# Europe PMC (field tags optional)
+block1_epmc = build_or_block(term1, synonyms1)
+block2_epmc = build_or_block(term2, synonyms2)
+block3_epmc = build_or_block(term3, "")
+not_epmc = build_not_block(exclude_terms)
+epmc_query = combine_blocks(block1_epmc, block2_epmc, block3_epmc) + not_epmc
 
-# ---------------- URL BUILDERS ---------------- #
+# URLs
 pubmed_url = f"https://pubmed.ncbi.nlm.nih.gov/?term={urllib.parse.quote(pubmed_query)}&filter=years.{year_from}-{year_to}"
 pmc_url = f"https://www.ncbi.nlm.nih.gov/pmc/?term={urllib.parse.quote(pubmed_query)}"
-europe_pmc_url = f"https://europepmc.org/search?query={urllib.parse.quote(pubmed_query)}"
-google_scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(gs_query)}"
+europe_pmc_url = f"https://europepmc.org/search?query={urllib.parse.quote(epmc_query)}"
 
-# ---------------- FETCH PMC RESULTS ---------------- #
-def fetch_pmc_results(query: str, max_results: int = 50, api_key: str = None):
-    results = []
+# ---------------- FETCH RESULTS ---------------- #
+def fetch_pubmed_results(query: str, max_results: int = 50, api_key: str = None):
+    ids = []
     retstart = 0
     while True:
         params = {
-            "db": "pmc",
+            "db": "pubmed",
             "term": query,
             "retmode": "json",
-            "retmax": min(100, max_results - len(results)),
+            "retmax": min(100, max_results - len(ids)),
             "retstart": retstart
         }
         if api_key:
@@ -93,43 +92,64 @@ def fetch_pmc_results(query: str, max_results: int = 50, api_key: str = None):
         try:
             r = requests.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi", params=params, timeout=20)
             r.raise_for_status()
-        except requests.HTTPError as e:
-            st.error(f"HTTP error while fetching PMC results: {e}")
-            return results
         except requests.RequestException as e:
-            st.error(f"Request error: {e}")
-            return results
-
+            st.error(f"Error fetching PubMed results: {e}")
+            return []
         data = r.json()
-        ids = data.get("esearchresult", {}).get("idlist", [])
-        results.extend(ids)
-        retstart += len(ids)
-        if not ids or len(results) >= max_results:
+        new_ids = data.get("esearchresult", {}).get("idlist", [])
+        if not new_ids:
+            break
+        ids.extend(new_ids)
+        retstart += len(new_ids)
+        if len(ids) >= max_results:
             break
         time.sleep(0.34)
-    return results[:max_results]
+    return ids[:max_results]
+
+def fetch_europe_pmc_results(query: str, max_results: int = 50):
+    results = []
+    try:
+        r = requests.get("https://www.ebi.ac.uk/europepmc/webservices/rest/search", 
+                         params={"query": query, "format": "json", "pageSize": max_results}, timeout=20)
+        r.raise_for_status()
+        hits = r.json().get("resultList", {}).get("result", [])
+        for h in hits:
+            results.append({
+                "Title": h.get("title", ""),
+                "Authors": h.get("authorString", ""),
+                "Year": h.get("pubYear", ""),
+                "DOI": h.get("doi", ""),
+                "PMID": h.get("pmid", ""),
+                "PMCID": h.get("pmcid", "")
+            })
+    except requests.RequestException as e:
+        st.error(f"Error fetching Europe PMC results: {e}")
+    return results
 
 # ---------------- OUTPUT ---------------- #
-st.subheader("🧾 Generated Search Strings")
-col1, col2 = st.columns(2)
-with col1:
-    st.markdown("**PubMed / PMC / Europe PMC**")
-    st.code(pubmed_query, language="text")
-with col2:
-    st.markdown("**Google Scholar**")
-    st.code(gs_query, language="text")
-
 st.subheader("🔗 Direct Search Links")
-link_col1, link_col2, link_col3, link_col4 = st.columns(4)
-link_col1.markdown(f"🔬 [PubMed]({pubmed_url})", unsafe_allow_html=True)
-link_col2.markdown(f"📄 [PMC]({pmc_url})", unsafe_allow_html=True)
-link_col3.markdown(f"🌍 [Europe PMC]({europe_pmc_url})", unsafe_allow_html=True)
-link_col4.markdown(f"🎓 [Google Scholar]({google_scholar_url})", unsafe_allow_html=True)
+col1, col2, col3 = st.columns(3)
+col1.markdown(f"🔬 [PubMed]({pubmed_url})", unsafe_allow_html=True)
+col2.markdown(f"📄 [PMC]({pmc_url})", unsafe_allow_html=True)
+col3.markdown(f"🌍 [Europe PMC]({europe_pmc_url})", unsafe_allow_html=True)
 
-# ---------------- FETCH PMC IDs ---------------- #
-if st.button("Fetch PMC IDs"):
-    st.info("Fetching PMC IDs...")
-    pmc_ids = fetch_pmc_results(pubmed_query, max_results=MAX_PMC_RESULTS, api_key=NCBI_API_KEY)
-    st.success(f"Fetched {len(pmc_ids)} PMC IDs")
-    if pmc_ids:
-        st.download_button("⬇️ Download PMC IDs as CSV", pd.DataFrame({"PMC_ID": pmc_ids}).to_csv(index=False), "pmc_ids.csv", "text/csv")
+# ---------------- FETCH & DOWNLOAD ---------------- #
+if st.button("Fetch & Download Metadata"):
+    st.info("Fetching results...")
+    pubmed_ids = fetch_pubmed_results(pubmed_query, MAX_RESULTS, NCBI_API_KEY)
+    st.success(f"Fetched {len(pubmed_ids)} PubMed IDs")
+    
+    epmc_results = fetch_europe_pmc_results(epmc_query, MAX_RESULTS)
+    st.success(f"Fetched {len(epmc_results)} Europe PMC results")
+    
+    # Prepare CSV
+    df_pubmed = pd.DataFrame({"PubMed_ID": pubmed_ids, "Search_String": pubmed_query})
+    df_epmc = pd.DataFrame(epmc_results)
+    df_epmc["Search_String"] = epmc_query
+    
+    with pd.ExcelWriter("search_results.xlsx") as writer:
+        df_pubmed.to_excel(writer, sheet_name="PubMed", index=False)
+        df_epmc.to_excel(writer, sheet_name="Europe_PMC", index=False)
+    
+    with open("search_results.xlsx", "rb") as f:
+        st.download_button("⬇️ Download Search Results (Excel)", f, "search_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

@@ -1,256 +1,231 @@
 # app.py
 """
-Literature Search Builder + Europe PMC / PMC API + Downloadable Results
+📚 Literature OA Downloader with PMC + Europe PMC + Crossref + Unpaywall
+
+Features:
+- Fetch all PMC results (batched)
+- Europe PMC search with API key
+- Unpaywall OA detection and PDF download
+- Scholar, PubMed, PMC pill buttons
+- Editable table & export CSV/RIS/ZIP
 """
 
 import streamlit as st
-import requests
 import pandas as pd
-import urllib.parse
+import requests
+import zipfile
 from pathlib import Path
+from urllib.parse import quote, urljoin
+from bs4 import BeautifulSoup
+import time
+from xml.etree import ElementTree as ET
 
-# -------------------- CONFIG -------------------- #
+# ================= CONFIG ================= #
+UNPAYWALL_EMAIL = "your_email@institute.edu"
+PMC_API_KEY = "YOUR_PMC_API_KEY"
+EUROPE_PMC_API_KEY = "YOUR_EUROPE_PMC_API_KEY"
 
-EUROPE_PMC_API = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
-PMC_API_KEY = "YOUR_PMC_API_KEY"  # <-- add your PMC API key here
+DOWNLOAD_DIR = Path("downloads")
+DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/pdf,text/html"
+}
+
 PMC_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
 
-# -------------------- PAGE CONFIG -------------------- #
+# ================= UI ================= #
+st.set_page_config("Literature OA Downloader", layout="wide")
+st.title("📚 Literature OA Downloader")
+st.caption("PMC + Europe PMC + Crossref + Unpaywall | 100% Legal OA")
 
-st.set_page_config(
-    page_title="Literature Search Builder",
-    page_icon="📚",
-    layout="wide",
+input_text = st.text_area(
+    "Paste DOI / PMID / PMCID / Reference (one per line)", height=220
 )
 
-st.title("📚 Literature Search Builder & Result Downloader")
-st.caption("PubMed • PMC • Europe PMC • Google Scholar")
+st.markdown("""
+<style>
+table { width:100%; border-collapse:collapse; }
+th, td { text-align:center; padding:8px; vertical-align:middle; }
+th { background:#f1f5f9; font-weight:700; }
+</style>
+""", unsafe_allow_html=True)
 
-# -------------------- SIDEBAR INPUT -------------------- #
+# ================= HELPERS ================= #
 
-with st.sidebar:
-    st.header("🔧 Search Terms")
-
-    term1 = st.text_input("Concept 1 (required)", "surgical site infection")
-    synonyms1 = st.text_area("Synonyms (OR, one per line)", "SSI")
-
-    term2 = st.text_input("Concept 2 (optional)", "antibacterial suture")
-    synonyms2 = st.text_area("Synonyms", "triclosan suture\nPLUS suture")
-
-    term3 = st.text_input("Concept 3 (optional)", "")
-
-    exclude_terms = st.text_area("Exclude terms (NOT)", "review")
-
-    year_from, year_to = st.slider(
-        "Publication year range",
-        1990, 2025, (2000, 2025)
-    )
-
-    max_results = st.slider("Max results per database", 10, 200, 50)
-
-# -------------------- HELPERS -------------------- #
-
-def build_or_block(main, synonyms, field=None):
-    terms = []
-    if main:
-        terms.append(main)
-    if synonyms:
-        terms.extend([s.strip() for s in synonyms.split("\n") if s.strip()])
-    if not terms:
+def make_btn(url, label, color="#2563eb"):
+    if not url:
         return ""
-    if field:
-        terms = [f"{t}[{field}]" for t in terms]
-    return terms[0] if len(terms) == 1 else "(" + " OR ".join(terms) + ")"
+    return f"""
+    <a href="{url}" target="_blank"
+    style="background:{color};color:white;padding:5px 10px;
+    border-radius:999px;text-decoration:none;font-weight:600;margin:2px;">
+    {label}</a>
+    """
 
-def build_not_block(terms, field=None):
-    if not terms:
-        return ""
-    items = [t.strip() for t in terms.split("\n") if t.strip()]
-    if field:
-        items = [f"{t}[{field}]" for t in items]
-    return " NOT (" + " OR ".join(items) + ")"
-
-def combine(*blocks):
-    return " AND ".join([b for b in blocks if b])
-
-# -------------------- SEARCH STRINGS -------------------- #
-
-block1 = build_or_block(term1, synonyms1, "Title/Abstract")
-block2 = build_or_block(term2, synonyms2, "Title/Abstract")
-block3 = build_or_block(term3, "", "Title/Abstract")
-not_block = build_not_block(exclude_terms, "Publication Type")
-
-pubmed_query = combine(block1, block2, block3) + not_block
-gs_query = combine(
-    build_or_block(term1, synonyms1),
-    build_or_block(term2, synonyms2),
-    build_or_block(term3, "")
-) + build_not_block(exclude_terms)
-
-# -------------------- URL LINKS -------------------- #
-
-pubmed_url = (
-    "https://pubmed.ncbi.nlm.nih.gov/?term="
-    + urllib.parse.quote(pubmed_query)
-    + f"&filter=years.{year_from}-{year_to}"
-)
-pmc_url = "https://www.ncbi.nlm.nih.gov/pmc/?term=" + urllib.parse.quote(pubmed_query)
-europe_pmc_url = "https://europepmc.org/search?query=" + urllib.parse.quote(pubmed_query)
-scholar_url = "https://scholar.google.com/scholar?q=" + urllib.parse.quote(gs_query)
-
-# -------------------- DISPLAY SEARCH STRINGS -------------------- #
-
-st.subheader("🧾 Generated Search Strings")
-
-c1, c2 = st.columns(2)
-with c1:
-    st.markdown("**PubMed / PMC / Europe PMC**")
-    st.code(pubmed_query)
-
-with c2:
-    st.markdown("**Google Scholar**")
-    st.code(gs_query)
-
-st.subheader("🔗 Direct Search Links")
-l1, l2, l3, l4 = st.columns(4)
-l1.markdown(f"🔬 **PubMed**  \n[Open]({pubmed_url})")
-l2.markdown(f"📄 **PMC**  \n[Open]({pmc_url})")
-l3.markdown(f"🌍 **Europe PMC**  \n[Open]({europe_pmc_url})")
-l4.markdown(f"🎓 **Scholar**  \n[Open]({scholar_url})")
-
-st.divider()
-
-# -------------------- EUROPE PMC API -------------------- #
-
-def fetch_europe_pmc(query, max_results=50):
+def europe_pmc(query, max_results=50):
     r = requests.get(
-        EUROPE_PMC_API,
-        params={"query": query, "format": "json", "pageSize": max_results},
-        timeout=30
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+        params={
+            "query": query,
+            "format": "json",
+            "pageSize": max_results,
+            "apiKey": EUROPE_PMC_API_KEY
+        },
+        timeout=20
     )
     hits = r.json().get("resultList", {}).get("result", [])
     rows = []
     for h in hits:
         rows.append({
-            "Title": h.get("title"),
-            "Authors": h.get("authorString"),
-            "Journal": h.get("journalTitle"),
-            "Year": h.get("pubYear"),
-            "DOI": h.get("doi"),
-            "PMID": h.get("pmid"),
-            "PMCID": h.get("pmcid"),
-            "OA": "Yes" if h.get("isOpenAccess") == "Y" else "No",
-            "PDF": h.get("fullTextUrlList", {}).get("fullTextUrl", [{}])[0].get("url")
+            "Title": h.get("title",""),
+            "Authors": h.get("authorString",""),
+            "Journal": h.get("journalTitle",""),
+            "Year": h.get("pubYear",""),
+            "DOI": h.get("doi",""),
+            "PMID": h.get("pmid",""),
+            "PMCID": h.get("pmcid",""),
+            "OA": "Yes" if h.get("isOpenAccess") else "No",
+            "PDF": "",
         })
-    return pd.DataFrame(rows)
+    return rows
 
-# -------------------- PMC API -------------------- #
+def id_crosswalk(val):
+    r = requests.get(
+        PMC_BASE + "idconv.fcgi",
+        params={"ids": val, "format": "json", "api_key": PMC_API_KEY},
+        timeout=15
+    )
+    recs = r.json().get("records", [])
+    if not recs:
+        return {}
+    r0 = recs[0]
+    return {"PMID": r0.get("pmid",""), "PMCID": r0.get("pmcid",""), "DOI": r0.get("doi","")}
 
-def fetch_pmc(query, max_results=50):
-    # Use esearch to get PMIDs / PMCIDs
+def crossref(doi):
+    r = requests.get(f"https://api.crossref.org/works/{doi}", timeout=15)
+    if r.status_code != 200:
+        return {}
+    m = r.json()["message"]
+    return {
+        "Title": m.get("title",[""])[0],
+        "Journal": m.get("container-title",[""])[0],
+        "Year": str(m.get("issued",{}).get("date-parts",[[None]])[0][0]),
+        "Authors": ", ".join(f"{a.get('family','')} {a.get('given','')}" for a in m.get("author",[]))
+    }
+
+def unpaywall(doi):
+    r = requests.get(f"https://api.unpaywall.org/v2/{doi}", params={"email": UNPAYWALL_EMAIL}, timeout=15)
+    return r.json() if r.status_code == 200 else {}
+
+def extract_pdf(page):
+    r = requests.get(page, headers=HEADERS, timeout=20)
+    soup = BeautifulSoup(r.text, "lxml")
+    m = soup.find("meta", attrs={"name":"citation_pdf_url"})
+    if m: return m["content"]
+    for a in soup.find_all("a", href=True):
+        if ".pdf" in a["href"].lower():
+            return urljoin(page, a["href"])
+    return None
+
+def download_pdf(url, fname):
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    if r.status_code == 200 and "pdf" in r.headers.get("Content-Type",""):
+        (DOWNLOAD_DIR / fname).write_bytes(r.content)
+        return "Downloaded"
+    return "Failed"
+
+def make_ris(df):
+    out = []
+    for _, r in df.iterrows():
+        out += [
+            "TY  - JOUR",
+            f"TI  - {r['Title']}" if r["Title"] else "",
+            f"JO  - {r['Journal']}" if r["Journal"] else "",
+            f"PY  - {r['Year']}" if r["Year"] else "",
+        ]
+        for a in r["Authors"].split(","):
+            if a.strip():
+                out.append(f"AU  - {a.strip()}")
+        if r["DOI"]: out.append(f"DO  - {r['DOI']}")
+        if r["PMID"]: out.append(f"PM  - {r['PMID']}")
+        out += ["ER  -", ""]
+    return "\n".join(out)
+
+def fetch_pmc(query, max_results=50, batch_size=50):
     esearch_url = PMC_BASE + "esearch.fcgi"
-    params = {
-        "db": "pmc",
-        "term": query,
-        "retmax": max_results,
-        "api_key": PMC_API_KEY,
-        "retmode": "json"
-    }
+    params = {"db":"pmc","term":query,"retmax":max_results,"retmode":"json","api_key":PMC_API_KEY}
     r = requests.get(esearch_url, params=params, timeout=30)
-    ids = r.json().get("esearchresult", {}).get("idlist", [])
-    rows = []
+    ids = r.json().get("esearchresult",{}).get("idlist",[])
+    rows=[]
+    if not ids: return pd.DataFrame(rows)
 
-    if not ids:
-        return pd.DataFrame(rows)
-
-    # Fetch details via efetch
-    efetch_url = PMC_BASE + "efetch.fcgi"
-    params = {
-        "db": "pmc",
-        "id": ",".join(ids),
-        "retmode": "xml",
-        "api_key": PMC_API_KEY
-    }
-    r = requests.get(efetch_url, params=params, timeout=30)
-    from xml.etree import ElementTree as ET
-    root = ET.fromstring(r.text)
-
-    for article in root.findall(".//article"):
-        title = article.findtext(".//article-title")
-        journal = article.findtext(".//journal-title")
-        year = article.findtext(".//pub-date/year")
-        authors = ", ".join([f"{a.findtext('surname')} {a.findtext('given-names')}" for a in article.findall(".//contrib[@contrib-type='author']")])
-        pmcid = article.findtext(".//article-id[@pub-id-type='pmc']")
-        doi = article.findtext(".//article-id[@pub-id-type='doi']")
-        rows.append({
-            "Title": title,
-            "Authors": authors,
-            "Journal": journal,
-            "Year": year,
-            "DOI": doi,
-            "PMID": "",  # PMC only
-            "PMCID": pmcid,
-            "OA": "Yes",
-            "PDF": ""  # Optional: implement PDF extraction from PMC link
-        })
+    for i in range(0,len(ids),batch_size):
+        batch_ids = ids[i:i+batch_size]
+        efetch_url = PMC_BASE + "efetch.fcgi"
+        params = {"db":"pmc","id":",".join(batch_ids),"retmode":"xml","api_key":PMC_API_KEY}
+        r = requests.get(efetch_url, params=params, timeout=30)
+        root = ET.fromstring(r.text)
+        for article in root.findall(".//article"):
+            title = article.findtext(".//article-title")
+            journal = article.findtext(".//journal-title")
+            year = article.findtext(".//pub-date/year")
+            authors = ", ".join([f"{a.findtext('surname')} {a.findtext('given-names')}" 
+                                 for a in article.findall(".//contrib[@contrib-type='author']")])
+            pmcid = article.findtext(".//article-id[@pub-id-type='pmc']")
+            doi = article.findtext(".//article-id[@pub-id-type='doi']")
+            rows.append({
+                "Title": title,"Authors": authors,"Journal": journal,"Year": year,
+                "DOI": doi,"PMID":"","PMCID":pmcid,"OA":"Yes","PDF":""
+            })
     return pd.DataFrame(rows)
 
-# -------------------- FETCH & DISPLAY RESULTS -------------------- #
+# ================= MAIN ================= #
 
-st.subheader("📥 Fetch Results")
+if st.button("🔍 Process"):
 
-if st.button("🔍 Fetch Europe PMC + PMC"):
+    rows=[]
+    lines=[l.strip() for l in input_text.splitlines() if l.strip()]
+    prog = st.progress(0.0)
 
-    with st.spinner("Fetching Europe PMC results..."):
-        df_epmc = fetch_europe_pmc(pubmed_query, max_results)
+    for i,x in enumerate(lines):
 
-    with st.spinner("Fetching PMC results..."):
-        df_pmc = fetch_pmc(pubmed_query, max_results)
+        rec={"Input":x,"Title":"","Journal":"","Year":"","Authors":"","DOI":"","PMID":"","PMCID":"",
+             "OA":"No","PDF":"","Status":"",
+             "Scholar":make_btn(f"https://scholar.google.com/scholar?q={quote(x)}","🎓 Scholar","#6d28d9"),
+             "PubMed":make_btn(f"https://pubmed.ncbi.nlm.nih.gov/?term={quote(x)}","🔬 PubMed","#065f46"),
+             "PMC":make_btn(f"https://www.ncbi.nlm.nih.gov/pmc/?term={quote(x)}","📄 PMC","#7c3aed")}
 
-    # Combine, remove duplicates
-    df = pd.concat([df_epmc, df_pmc], ignore_index=True).drop_duplicates(subset=["DOI","PMCID"])
+        # Europe PMC
+        rows += europe_pmc(x, max_results=50)
 
-    st.success(f"✅ Retrieved {len(df)} records total")
-    edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
+        # PMC API
+        pmc_df = fetch_pmc(x, max_results=50)
+        rows += pmc_df.to_dict("records")
 
-    # -------------------- EXPORT -------------------- #
+        rows.append(rec)
+        prog.progress((i+1)/len(lines))
+        time.sleep(0.2)
 
-    def make_ris(df):
-        out = []
-        for _, r in df.iterrows():
-            out += [
-                "TY  - JOUR",
-                f"TI  - {r['Title']}",
-                f"JO  - {r['Journal']}",
-                f"PY  - {r['Year']}",
-            ]
-            if pd.notna(r["Authors"]):
-                for a in r["Authors"].split(","):
-                    out.append(f"AU  - {a.strip()}")
-            if r["DOI"]:
-                out.append(f"DO  - {r['DOI']}")
-            if r["PMID"]:
-                out.append(f"PM  - {r['PMID']}")
-            if r["PMCID"]:
-                out.append(f"PMCID - {r['PMCID']}")
-            out += ["ER  -", ""]
-        return "\n".join(out)
+    df = pd.DataFrame(rows)
+    st.success("✅ Completed")
 
-    st.download_button(
-        "⬇️ Download CSV",
-        edited_df.to_csv(index=False),
-        "literature_results.csv",
-        "text/csv"
-    )
+    st.data_editor(df, use_container_width=True)
 
-    st.download_button(
-        "⬇️ Download RIS",
-        make_ris(edited_df),
-        "literature_results.ris",
-        "application/x-research-info-systems"
-    )
+    # ================= EXPORT ================= #
+    csv_path = Path("results.csv")
+    ris_path = Path("references.ris")
 
-st.info(
-    "Europe PMC + PMC API fetch allows full metadata download. "
-    "PMC API requires a valid API key."
-)
+    df.to_csv(csv_path, index=False)
+    ris_path.write_text(make_ris(df), encoding="utf-8")
+
+    final_zip = Path("literature_results.zip")
+    with zipfile.ZipFile(final_zip,"w") as z:
+        z.write(csv_path,"results.csv")
+        z.write(ris_path,"references.ris")
+        for f in DOWNLOAD_DIR.glob("*.pdf"):
+            z.write(f,f"oa_pdfs/{f.name}")
+
+    with open(final_zip,"rb") as f:
+        st.download_button("📦 Download ALL (CSV + RIS + PDFs)", f, "literature_results.zip","application/zip")

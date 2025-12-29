@@ -4,6 +4,7 @@ import pandas as pd
 import io
 import time
 import xml.etree.ElementTree as ET
+import re
 
 # ===================== PAGE CONFIG ===================== #
 st.set_page_config(
@@ -12,13 +13,12 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📚 Literature Search (Paste Search String)")
-st.caption("Europe PMC | PubMed | PMC — unlimited results")
+st.title("📚 Literature Search (Europe PMC | PubMed | PMC)")
+st.caption("Paste search strings directly and fetch all results (unlimited)")
 
 # ===================== REQUIRED CONFIG ===================== #
-NCBI_EMAIL = "malviaharish@orcid"   # 🔴 REQUIRED for PubMed/PMC
-TOOL_NAME = "LiteratureSearchApp"
-"
+NCBI_EMAIL = "your_email@example.com"  # 🔴 Replace with your email
+TOOL_NAME = "SR_Search_App"
 
 # ===================== INPUT ===================== #
 db_choice = st.radio(
@@ -85,7 +85,15 @@ def fetch_all_epmc(query):
     } for r in all_results])
 
 # ===================== NCBI (PubMed & PMC) ===================== #
+def adapt_pmc_query(query):
+    """Remove PubMed-specific field tags to make query PMC-compatible"""
+    # Remove [Title/Abstract], [Publication Type], [tiab], [pt], etc.
+    cleaned = re.sub(r"\[[^\]]*\]", "", query)
+    return cleaned
+
 def ncbi_esearch(db, query):
+    if db == "pmc":
+        query = adapt_pmc_query(query)
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     params = {
         "db": db,
@@ -129,9 +137,7 @@ def ncbi_efetch(db, webenv, query_key, total):
             title = art.findtext(".//ArticleTitle")
             year = art.findtext(".//PubDate/Year")
             journal = art.findtext(".//Journal/Title")
-            abstract = " ".join(
-                [a.text for a in art.findall(".//AbstractText") if a.text]
-            )
+            abstract = " ".join([a.text for a in art.findall(".//AbstractText") if a.text])
 
             pmid = art.findtext(".//PMID")
             pmcid = art.findtext(".//ArticleId[@IdType='pmc']")
@@ -170,11 +176,9 @@ if run_search:
             try:
                 if db_choice == "Europe PMC":
                     df = fetch_all_epmc(search_string)
-
                 elif db_choice == "PubMed":
                     total, webenv, qk = ncbi_esearch("pubmed", search_string)
                     df = ncbi_efetch("pubmed", webenv, qk, total)
-
                 else:  # PMC
                     total, webenv, qk = ncbi_esearch("pmc", search_string)
                     df = ncbi_efetch("pmc", webenv, qk, total)
@@ -187,7 +191,6 @@ if run_search:
 
                     # ===================== DOWNLOAD ===================== #
                     st.subheader("💾 Download Results")
-
                     st.download_button(
                         "⬇️ Download CSV",
                         df.to_csv(index=False),
@@ -214,5 +217,5 @@ st.divider()
 st.info(
     "Europe PMC uses RESTful API (cursor-based pagination). "
     "PubMed & PMC use official NCBI Entrez E-utilities. "
-    "All results are retrieved without artificial limits."
+    "PMC queries are auto-cleaned to remove PubMed-specific field tags."
 )

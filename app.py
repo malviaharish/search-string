@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("📚 Literature Search (PubMed | Europe PMC)")
-st.caption("Paste search strings directly and fetch all results (unlimited)")
+st.caption("Paste search strings directly and fetch all results")
 
 # ===================== REQUIRED CONFIG ===================== #
 NCBI_EMAIL = "malviaharish@gmail.com"  # Your email required by NCBI
@@ -195,8 +195,3 @@ if run_search:
                 st.error(f"API error: {e}")
 
 st.divider()
-st.info(
-    "Europe PMC uses RESTful API (cursor-based pagination). "
-    "PubMed uses official NCBI Entrez E-utilities. "
-    "All results are retrieved without artificial limits."
-)

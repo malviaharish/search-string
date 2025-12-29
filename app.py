@@ -126,7 +126,7 @@ if run_search:
             except Exception as e:
                 st.error(f"Europe PMC API error: {e}")
 
-st.divider()
+st.divider() 
 st.info(
     "This app uses cursor-based pagination from the official Europe PMC REST API "
     "to retrieve ALL matching records without an artificial limit."

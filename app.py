@@ -17,7 +17,7 @@ st.title("📚 Literature Search (Europe PMC | PubMed | PMC)")
 st.caption("Paste search strings directly and fetch all results (unlimited)")
 
 # ===================== REQUIRED CONFIG ===================== #
-NCBI_EMAIL = "your_email@example.com"  # 🔴 Replace with your email
+NCBI_EMAIL = "malviaharish@gmail.com"  # 🔴 Replace with your email
 TOOL_NAME = "SR_Search_App"
 
 # ===================== INPUT ===================== #

@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("🌍 Europe PMC Search")
-st.caption("Paste a Europe PMC search string and retrieve ALL results (no limit)")
+st.caption("Paste a Europe PMC search string and retrieve ALL results")
 
 # ===================== INPUT ===================== #
 search_string = st.text_area(

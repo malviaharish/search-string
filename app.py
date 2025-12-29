@@ -1,42 +1,52 @@
 import streamlit as st
-import pandas as pd
 import requests
+import pandas as pd
 import io
 import time
+import xml.etree.ElementTree as ET
 
 # ===================== PAGE CONFIG ===================== #
 st.set_page_config(
-    page_title="Europe PMC Search & Download",
-    page_icon="🌍",
+    page_title="Literature Search Downloader",
+    page_icon="📚",
     layout="wide"
 )
 
-st.title("🌍 Europe PMC Search")
-st.caption("Paste a Europe PMC search string and retrieve ALL results")
+st.title("📚 Literature Search (Paste Search String)")
+st.caption("Europe PMC | PubMed | PMC — unlimited results")
+
+# ===================== REQUIRED CONFIG ===================== #
+NCBI_EMAIL = "your_email@example.com"   # 🔴 REQUIRED for PubMed/PMC
+TOOL_NAME = "SR_Search_App"
 
 # ===================== INPUT ===================== #
+db_choice = st.radio(
+    "Select Database",
+    ["Europe PMC", "PubMed", "PMC"],
+    horizontal=True
+)
+
 search_string = st.text_area(
-    "Paste Europe PMC search string",
+    "Paste search string",
     height=180,
     placeholder=(
-        'Example:\n'
-        'TITLE_ABSTRACT:("surgical site infection" OR SSI)\n'
-        'AND ("antibacterial suture" OR triclosan)\n'
-        'AND PUB_TYPE:"Journal Article"\n'
-        'AND FIRST_PDATE:[2015-01-01 TO 2024-12-31]'
+        "Examples:\n\n"
+        "Europe PMC:\n"
+        'TITLE_ABSTRACT:("surgical site infection" OR SSI)\n\n'
+        "PubMed:\n"
+        '"surgical site infection"[Title/Abstract] NOT review[Publication Type]\n\n'
+        "PMC:\n"
+        '"ACL reconstruction"[Title/Abstract] AND titanium'
     )
 )
 
-run_search = st.button("🔍 Run Europe PMC Search")
+run_search = st.button("🔍 Run Search")
 
-# ===================== EUROPE PMC API ===================== #
-def fetch_all_epmc_results(query):
-    """
-    Fetch ALL results from Europe PMC using cursor-based pagination
-    """
+# ===================== EUROPE PMC ===================== #
+def fetch_all_epmc(query):
     base_url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
-    page_size = 1000  # Europe PMC max
     cursor = "*"
+    page_size = 1000
     all_results = []
 
     while True:
@@ -47,84 +57,161 @@ def fetch_all_epmc_results(query):
             "cursorMark": cursor,
             "resultType": "core"
         }
-
-        response = requests.get(base_url, params=params, timeout=60)
-        response.raise_for_status()
-        data = response.json()
+        r = requests.get(base_url, params=params, timeout=60)
+        r.raise_for_status()
+        data = r.json()
 
         results = data.get("resultList", {}).get("result", [])
         if not results:
             break
 
         all_results.extend(results)
-
         next_cursor = data.get("nextCursorMark")
         if not next_cursor or next_cursor == cursor:
             break
 
         cursor = next_cursor
-        time.sleep(0.2)  # polite delay
+        time.sleep(0.2)
 
-    return all_results
+    return pd.DataFrame([{
+        "Title": r.get("title"),
+        "Authors": r.get("authorString"),
+        "Journal": r.get("journalTitle"),
+        "Year": r.get("pubYear"),
+        "DOI": r.get("doi"),
+        "Open Access": r.get("isOpenAccess"),
+        "URL": f"https://europepmc.org/article/{r.get('source')}/{r.get('id')}"
+    } for r in all_results])
+
+# ===================== NCBI (PubMed & PMC) ===================== #
+def ncbi_esearch(db, query):
+    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+    params = {
+        "db": db,
+        "term": query,
+        "retmax": 100000,
+        "usehistory": "y",
+        "email": NCBI_EMAIL,
+        "tool": TOOL_NAME
+    }
+    r = requests.get(url, params=params, timeout=60)
+    r.raise_for_status()
+    root = ET.fromstring(r.text)
+    return (
+        int(root.findtext("Count")),
+        root.findtext("WebEnv"),
+        root.findtext("QueryKey")
+    )
+
+def ncbi_efetch(db, webenv, query_key, total):
+    records = []
+    batch_size = 200
+
+    for start in range(0, total, batch_size):
+        url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+        params = {
+            "db": db,
+            "query_key": query_key,
+            "WebEnv": webenv,
+            "retstart": start,
+            "retmax": batch_size,
+            "retmode": "xml",
+            "email": NCBI_EMAIL,
+            "tool": TOOL_NAME
+        }
+
+        r = requests.get(url, params=params, timeout=60)
+        r.raise_for_status()
+        root = ET.fromstring(r.text)
+
+        for art in root.findall(".//PubmedArticle") + root.findall(".//article"):
+            title = art.findtext(".//ArticleTitle")
+            year = art.findtext(".//PubDate/Year")
+            journal = art.findtext(".//Journal/Title")
+            abstract = " ".join(
+                [a.text for a in art.findall(".//AbstractText") if a.text]
+            )
+
+            pmid = art.findtext(".//PMID")
+            pmcid = art.findtext(".//ArticleId[@IdType='pmc']")
+            doi = art.findtext(".//ArticleId[@IdType='doi']")
+
+            url_link = ""
+            if db == "pubmed" and pmid:
+                url_link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+            if db == "pmc" and pmcid:
+                url_link = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/"
+
+            records.append({
+                "Title": title,
+                "Journal": journal,
+                "Year": year,
+                "PMID": pmid,
+                "PMCID": pmcid,
+                "DOI": doi,
+                "Abstract": abstract,
+                "URL": url_link
+            })
+
+        time.sleep(0.2)
+
+    return pd.DataFrame(records)
 
 # ===================== RUN SEARCH ===================== #
 if run_search:
     if not search_string.strip():
-        st.warning("Please paste a Europe PMC search string.")
+        st.warning("Please paste a search string.")
     else:
         st.subheader("🧠 Search Strategy Used")
         st.code(search_string, language="text")
 
-        with st.spinner("Fetching ALL results from Europe PMC (this may take time)..."):
+        with st.spinner("Fetching ALL results (no limit)..."):
             try:
-                records = fetch_all_epmc_results(search_string)
+                if db_choice == "Europe PMC":
+                    df = fetch_all_epmc(search_string)
 
-                if not records:
+                elif db_choice == "PubMed":
+                    total, webenv, qk = ncbi_esearch("pubmed", search_string)
+                    df = ncbi_efetch("pubmed", webenv, qk, total)
+
+                else:  # PMC
+                    total, webenv, qk = ncbi_esearch("pmc", search_string)
+                    df = ncbi_efetch("pmc", webenv, qk, total)
+
+                if df.empty:
                     st.warning("No results found.")
                 else:
-                    df = pd.DataFrame([
-                        {
-                            "Title": r.get("title"),
-                            "Authors": r.get("authorString"),
-                            "Journal": r.get("journalTitle"),
-                            "Year": r.get("pubYear"),
-                            "Publication Type": ", ".join(
-                                r.get("pubTypeList", {}).get("pubType", [])
-                            ),
-                            "Open Access": r.get("isOpenAccess"),
-                            "DOI": r.get("doi"),
-                            "Europe PMC URL": f"https://europepmc.org/article/{r.get('source')}/{r.get('id')}"
-                        }
-                        for r in records
-                    ])
-
                     st.subheader(f"📄 Results Retrieved: {len(df)}")
                     st.dataframe(df, use_container_width=True)
 
-                    # ===================== DOWNLOADS ===================== #
+                    # ===================== DOWNLOAD ===================== #
                     st.subheader("💾 Download Results")
 
                     st.download_button(
                         "⬇️ Download CSV",
                         df.to_csv(index=False),
-                        "europe_pmc_results.csv",
+                        f"{db_choice.replace(' ', '_').lower()}_results.csv",
                         "text/csv"
                     )
 
-                    excel_buffer = io.BytesIO()
-                    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                    excel_buf = io.BytesIO()
+                    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
                         df.to_excel(writer, index=False)
-                    excel_buffer.seek(0)
+                    excel_buf.seek(0)
 
                     st.download_button(
                         "⬇️ Download Excel",
-                        excel_buffer,
-                        "europe_pmc_results.xlsx",
+                        excel_buf,
+                        f"{db_choice.replace(' ', '_').lower()}_results.xlsx",
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
 
             except Exception as e:
-                st.error(f"Europe PMC API error: {e}")
+                st.error(f"API error: {e}")
 
-st.divider() 
-
+st.divider()
+st.info(
+    "Europe PMC uses RESTful API (cursor-based pagination). "
+    "PubMed & PMC use official NCBI Entrez E-utilities. "
+    "All results are retrieved without artificial limits."
+)

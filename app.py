@@ -16,8 +16,9 @@ st.title("📚 Literature Search (Paste Search String)")
 st.caption("Europe PMC | PubMed | PMC — unlimited results")
 
 # ===================== REQUIRED CONFIG ===================== #
-NCBI_EMAIL = "your_email@example.com"   # 🔴 REQUIRED for PubMed/PMC
-TOOL_NAME = "SR_Search_App"
+NCBI_EMAIL = "malviaharish@orcid"   # 🔴 REQUIRED for PubMed/PMC
+TOOL_NAME = "LiteratureSearchApp"
+"
 
 # ===================== INPUT ===================== #
 db_choice = st.radio(

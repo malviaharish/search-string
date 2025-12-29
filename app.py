@@ -3,8 +3,6 @@ import requests
 import pandas as pd
 import io
 import time
-import xml.etree.ElementTree as ET
-import re
 
 # ===================== PAGE CONFIG ===================== #
 st.set_page_config(
@@ -13,17 +11,17 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📚 Literature Search (Europe PMC | PubMed | PMC)")
+st.title("📚 Literature Search (PubMed | Europe PMC)")
 st.caption("Paste search strings directly and fetch all results (unlimited)")
 
 # ===================== REQUIRED CONFIG ===================== #
-NCBI_EMAIL = "malviaharish@gmail.com"  # 🔴 Replace with your email
-TOOL_NAME = "SR_Search_App"
+NCBI_EMAIL = "malviaharish@gmail.com"  # Your email required by NCBI
+TOOL_NAME = "Harish_LitSearch_App"    # Short descriptive name for the app
 
 # ===================== INPUT ===================== #
 db_choice = st.radio(
     "Select Database",
-    ["Europe PMC", "PubMed", "PMC"],
+    ["Europe PMC", "PubMed"],
     horizontal=True
 )
 
@@ -35,9 +33,7 @@ search_string = st.text_area(
         "Europe PMC:\n"
         'TITLE_ABSTRACT:("surgical site infection" OR SSI)\n\n'
         "PubMed:\n"
-        '"surgical site infection"[Title/Abstract] NOT review[Publication Type]\n\n'
-        "PMC:\n"
-        '"ACL reconstruction"[Title/Abstract] AND titanium'
+        '"surgical site infection"[Title/Abstract] NOT review[Publication Type]'
     )
 )
 
@@ -84,16 +80,10 @@ def fetch_all_epmc(query):
         "URL": f"https://europepmc.org/article/{r.get('source')}/{r.get('id')}"
     } for r in all_results])
 
-# ===================== NCBI (PubMed & PMC) ===================== #
-def adapt_pmc_query(query):
-    """Remove PubMed-specific field tags to make query PMC-compatible"""
-    # Remove [Title/Abstract], [Publication Type], [tiab], [pt], etc.
-    cleaned = re.sub(r"\[[^\]]*\]", "", query)
-    return cleaned
+# ===================== NCBI (PubMed) ===================== #
+import xml.etree.ElementTree as ET
 
 def ncbi_esearch(db, query):
-    if db == "pmc":
-        query = adapt_pmc_query(query)
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     params = {
         "db": db,
@@ -133,28 +123,22 @@ def ncbi_efetch(db, webenv, query_key, total):
         r.raise_for_status()
         root = ET.fromstring(r.text)
 
-        for art in root.findall(".//PubmedArticle") + root.findall(".//article"):
+        for art in root.findall(".//PubmedArticle"):
             title = art.findtext(".//ArticleTitle")
             year = art.findtext(".//PubDate/Year")
             journal = art.findtext(".//Journal/Title")
             abstract = " ".join([a.text for a in art.findall(".//AbstractText") if a.text])
 
             pmid = art.findtext(".//PMID")
-            pmcid = art.findtext(".//ArticleId[@IdType='pmc']")
             doi = art.findtext(".//ArticleId[@IdType='doi']")
 
-            url_link = ""
-            if db == "pubmed" and pmid:
-                url_link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-            if db == "pmc" and pmcid:
-                url_link = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/"
+            url_link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else ""
 
             records.append({
                 "Title": title,
                 "Journal": journal,
                 "Year": year,
                 "PMID": pmid,
-                "PMCID": pmcid,
                 "DOI": doi,
                 "Abstract": abstract,
                 "URL": url_link
@@ -176,12 +160,9 @@ if run_search:
             try:
                 if db_choice == "Europe PMC":
                     df = fetch_all_epmc(search_string)
-                elif db_choice == "PubMed":
+                else:  # PubMed
                     total, webenv, qk = ncbi_esearch("pubmed", search_string)
                     df = ncbi_efetch("pubmed", webenv, qk, total)
-                else:  # PMC
-                    total, webenv, qk = ncbi_esearch("pmc", search_string)
-                    df = ncbi_efetch("pmc", webenv, qk, total)
 
                 if df.empty:
                     st.warning("No results found.")
@@ -216,6 +197,6 @@ if run_search:
 st.divider()
 st.info(
     "Europe PMC uses RESTful API (cursor-based pagination). "
-    "PubMed & PMC use official NCBI Entrez E-utilities. "
-    "PMC queries are auto-cleaned to remove PubMed-specific field tags."
+    "PubMed uses official NCBI Entrez E-utilities. "
+    "All results are retrieved without artificial limits."
 )

@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import io
+import time
 
 # ===================== PAGE CONFIG ===================== #
 st.set_page_config(
@@ -10,64 +11,75 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🌍 Europe PMC Search (Paste Search String)")
-st.caption("Paste a complete Europe PMC search string and download results")
+st.title("🌍 Europe PMC Search")
+st.caption("Paste a Europe PMC search string and retrieve ALL results (no limit)")
 
-# ===================== SIDEBAR ===================== #
-with st.sidebar:
-    st.header("🔎 Search Settings")
-
-    max_results = st.number_input(
-        "Maximum results",
-        min_value=10,
-        max_value=1000,
-        value=100,
-        step=10
-    )
-
-    run_search = st.button("🔍 Run Europe PMC Search")
-
-# ===================== MAIN INPUT ===================== #
+# ===================== INPUT ===================== #
 search_string = st.text_area(
     "Paste Europe PMC search string",
-    height=160,
+    height=180,
     placeholder=(
         'Example:\n'
-        'TITLE_ABSTRACT:("surgical site infection" OR SSI) '
-        'AND ("antibacterial suture" OR triclosan) '
-        'AND PUB_TYPE:"Journal Article" '
+        'TITLE_ABSTRACT:("surgical site infection" OR SSI)\n'
+        'AND ("antibacterial suture" OR triclosan)\n'
+        'AND PUB_TYPE:"Journal Article"\n'
         'AND FIRST_PDATE:[2015-01-01 TO 2024-12-31]'
     )
 )
 
-# ===================== EUROPE PMC API ===================== #
-def europe_pmc_search(query, page_size):
-    url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
-    params = {
-        "query": query,
-        "format": "json",
-        "pageSize": page_size,
-        "resultType": "core"
-    }
+run_search = st.button("🔍 Run Europe PMC Search")
 
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
-    return r.json()
+# ===================== EUROPE PMC API ===================== #
+def fetch_all_epmc_results(query):
+    """
+    Fetch ALL results from Europe PMC using cursor-based pagination
+    """
+    base_url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+    page_size = 1000  # Europe PMC max
+    cursor = "*"
+    all_results = []
+
+    while True:
+        params = {
+            "query": query,
+            "format": "json",
+            "pageSize": page_size,
+            "cursorMark": cursor,
+            "resultType": "core"
+        }
+
+        response = requests.get(base_url, params=params, timeout=60)
+        response.raise_for_status()
+        data = response.json()
+
+        results = data.get("resultList", {}).get("result", [])
+        if not results:
+            break
+
+        all_results.extend(results)
+
+        next_cursor = data.get("nextCursorMark")
+        if not next_cursor or next_cursor == cursor:
+            break
+
+        cursor = next_cursor
+        time.sleep(0.2)  # polite delay
+
+    return all_results
 
 # ===================== RUN SEARCH ===================== #
 if run_search:
     if not search_string.strip():
-        st.warning("Please paste a search string before running the search.")
+        st.warning("Please paste a Europe PMC search string.")
     else:
-        st.subheader("🧠 Europe PMC Search Strategy")
+        st.subheader("🧠 Search Strategy Used")
         st.code(search_string, language="text")
 
-        with st.spinner("Fetching results from Europe PMC..."):
+        with st.spinner("Fetching ALL results from Europe PMC (this may take time)..."):
             try:
-                data = europe_pmc_search(search_string, max_results)
-                results = data.get("resultList", {}).get("result", [])
+                records = fetch_all_epmc_results(search_string)
 
-                if not results:
+                if not records:
                     st.warning("No results found.")
                 else:
                     df = pd.DataFrame([
@@ -80,15 +92,16 @@ if run_search:
                                 r.get("pubTypeList", {}).get("pubType", [])
                             ),
                             "Open Access": r.get("isOpenAccess"),
+                            "DOI": r.get("doi"),
                             "Europe PMC URL": f"https://europepmc.org/article/{r.get('source')}/{r.get('id')}"
                         }
-                        for r in results
+                        for r in records
                     ])
 
-                    st.subheader(f"📄 Results ({len(df)})")
+                    st.subheader(f"📄 Results Retrieved: {len(df)}")
                     st.dataframe(df, use_container_width=True)
 
-                    # ===================== DOWNLOAD ===================== #
+                    # ===================== DOWNLOADS ===================== #
                     st.subheader("💾 Download Results")
 
                     st.download_button(
@@ -115,6 +128,6 @@ if run_search:
 
 st.divider()
 st.info(
-    "Paste a valid Europe PMC query exactly as you would use on europepmc.org. "
-    "All filters must be included inside the search string."
+    "This app uses cursor-based pagination from the official Europe PMC REST API "
+    "to retrieve ALL matching records without an artificial limit."
 )
